@@ -29,24 +29,26 @@ def get_duration(path):
     )
     return float(result.stdout.strip())
 
-def pick_clips(material_dir, first_video, audio_dur):
+def pick_clips(material_dir, first_videos, audio_dur):
+    """first_videos: list of candidate intro paths (may be empty). One is chosen at random."""
     files = [f for f in os.listdir(material_dir) if f.lower().endswith(".mp4")]
     if not files:
         raise RuntimeError("素材文件夹中没有 MP4 文件！")
     random.shuffle(files)
     clips, total = [], 0.0
-    if first_video:
-        clips.append(first_video)
-        total += get_duration(first_video)
+    chosen_first = random.choice(first_videos) if first_videos else None
+    if chosen_first:
+        clips.append(chosen_first)
+        total += get_duration(chosen_first)
     for name in files:
         if total >= audio_dur:
             break
         abs_path = os.path.join(material_dir, name)
-        if first_video and os.path.abspath(abs_path) == os.path.abspath(first_video):
+        if chosen_first and os.path.abspath(abs_path) == os.path.abspath(chosen_first):
             continue
         clips.append(abs_path)
         total += get_duration(abs_path)
-    return clips
+    return clips, chosen_first
 
 def run_cmd(cmd, log_fn, proc_setter):
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -204,8 +206,8 @@ class App(tk.Tk):
         src_card.columnconfigure(1, weight=1)
 
         self.var_material = tk.StringVar()
-        self.var_first    = tk.StringVar()
         self.var_audio    = tk.StringVar()
+        self._first_paths: list = []   # 备选片头完整路径列表
 
         # 素材文件夹 + 预处理按钮
         ttk.Label(src_card, text="素材文件夹", font=(F, 10)).grid(
@@ -221,16 +223,39 @@ class App(tk.Tk):
                                          command=self._preprocess_toggle)
         self.btn_preprocess.grid(row=0, column=1, padx=(6, 0))
 
-        # 固定片头
-        ttk.Label(src_card, text="固定片头", font=(F, 10)).grid(
-            row=1, column=0, sticky="w", pady=(0, 4), padx=(0, 10))
-        first_entry = ttk.Entry(src_card, textvariable=self.var_first, state="readonly")
-        first_entry.grid(row=1, column=1, sticky="ew", pady=(0, 4))
-        first_entry.bind("<Button-1>", lambda e: self._browse(self.var_first, "file", [("MP4", "*.mp4")]))
-        first_entry.config(cursor="hand2")
-        ttk.Label(src_card, text="💡 可选，不参与随机打乱",
+        # 备选片头（Listbox，支持逐条删除）
+        ttk.Label(src_card, text="备选片头", font=(F, 10)).grid(
+            row=1, column=0, sticky="nw", pady=(4, 0), padx=(0, 10))
+        first_outer = ttk.Frame(src_card)
+        first_outer.grid(row=1, column=1, sticky="ew", pady=(4, 0))
+        first_outer.columnconfigure(0, weight=1)
+
+        # Listbox + 滚动条
+        lb_frame = ttk.Frame(first_outer)
+        lb_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
+        lb_frame.columnconfigure(0, weight=1)
+        self.lb_first = tk.Listbox(
+            lb_frame, selectmode="extended", height=3,
+            font=("微软雅黑", 9), activestyle="none",
+            relief="solid", bd=1, highlightthickness=0,
+            selectbackground="#1677FF", selectforeground="white"
+        )
+        self.lb_first.grid(row=0, column=0, sticky="ew")
+        lb_sb = ttk.Scrollbar(lb_frame, orient="vertical", command=self.lb_first.yview)
+        lb_sb.grid(row=0, column=1, sticky="ns")
+        self.lb_first.configure(yscrollcommand=lb_sb.set)
+
+        # 操作按钮行
+        btn_first_row = ttk.Frame(first_outer)
+        btn_first_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Button(btn_first_row, text="＋ 添加",
+                   command=self._browse_first).pack(side="left", padx=(0, 6))
+        ttk.Button(btn_first_row, text="－ 删除选中",
+                   command=self._remove_selected_first).pack(side="left")
+
+        ttk.Label(src_card, text="💡 可选；多个片头每条视频等权重随机抽取一个",
                   font=(F, 8), foreground="#999999").grid(
-            row=2, column=1, sticky="w", pady=(0, 8))
+            row=2, column=1, sticky="w", pady=(2, 8))
 
         # 音频文件
         ttk.Label(src_card, text="音频文件", font=(F, 10)).grid(
@@ -332,7 +357,7 @@ class App(tk.Tk):
     def _current_config(self):
         return {
             "material": self.var_material.get(),
-            "first":    self.var_first.get(),
+            "first":    " | ".join(self._first_paths),
             "audio":    self.var_audio.get(),
             "output":   self.var_output.get(),
             "count":    self.var_count.get(),
@@ -344,11 +369,15 @@ class App(tk.Tk):
         if not cfg:
             return
         self.var_material.set(cfg.get("material", ""))
-        self.var_first.set(cfg.get("first", ""))
         self.var_audio.set(cfg.get("audio", ""))
         self.var_output.set(cfg.get("output", ""))
         self.var_count.set(cfg.get("count", 30))
         self.var_orient.set(cfg.get("orient", "portrait"))
+        # 片头列表
+        raw = cfg.get("first", "")
+        paths = [p.strip() for p in raw.split("|") if p.strip()]
+        self._first_paths = paths
+        self._refresh_first_lb()
 
     def _save_config(self):
         name = _ask_config_name(self)
@@ -375,6 +404,33 @@ class App(tk.Tk):
                filedialog.askopenfilename(filetypes=ftypes or [("所有文件", "*.*")])
         if path:
             var.set(path)
+
+    def _browse_first(self):
+        paths = filedialog.askopenfilenames(
+            title="选择备选片头（可多选）",
+            filetypes=[("MP4", "*.mp4"), ("所有文件", "*.*")]
+        )
+        if not paths:
+            return
+        for p in paths:
+            if p not in self._first_paths:
+                self._first_paths.append(p)
+        self._refresh_first_lb()
+
+    def _remove_selected_first(self):
+        selected = list(self.lb_first.curselection())
+        for idx in reversed(selected):   # 从后往前删，索引不会漂移
+            del self._first_paths[idx]
+        self._refresh_first_lb()
+
+    def _refresh_first_lb(self):
+        self.lb_first.delete(0, "end")
+        for p in self._first_paths:
+            self.lb_first.insert("end", os.path.basename(p))
+        # Tooltip：悬停显示完整路径（直接用 lb 的 title 模拟）
+        self.lb_first.config(
+            height=max(2, min(5, len(self._first_paths)))
+        )
 
     # ── 日志 / 状态 ──────────────────────────────────────────────
     def _log(self, msg):
@@ -518,12 +574,12 @@ class App(tk.Tk):
         self.btn_preprocess.configure(text="🔧 预处理", state="normal")
 
     def _start(self):
-        material = self.var_material.get().strip()
-        first    = self.var_first.get().strip()
-        audio    = self.var_audio.get().strip()
-        output   = self.var_output.get().strip()
-        total    = self.var_count.get()
-        portrait = self.var_orient.get() == "portrait"
+        material    = self.var_material.get().strip()
+        first_list  = list(self._first_paths)          # 备选片头列表快照
+        audio       = self.var_audio.get().strip()
+        output      = self.var_output.get().strip()
+        total       = self.var_count.get()
+        portrait    = self.var_orient.get() == "portrait"
 
         if not material or not audio or not output:
             messagebox.showwarning("参数缺失", "请填写：素材文件夹、音频文件、输出目录")
@@ -553,7 +609,9 @@ class App(tk.Tk):
                 try:
                     dur = get_duration(audio)
                     self._log(f"音频时长: {dur:.1f} 秒")
-                    clips = pick_clips(material, first, dur)
+                    clips, chosen_first = pick_clips(material, first_list, dur)
+                    if chosen_first:
+                        self._log(f"片头抽取: {os.path.basename(chosen_first)}")
                     self._log(f"选取素材 {len(clips)} 段")
                     with open(concat_txt, "w", encoding="utf-8") as f:
                         for c in clips:
