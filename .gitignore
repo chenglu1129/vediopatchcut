@@ -1,0 +1,22 @@
+# PyInstaller
+build/
+dist/
+*.spec
+
+# 配置文件（包含本地路径，不提交）
+config.json
+*.json
+!package*.json
+
+# Python
+__pycache__/
+*.py[cod]
+
+# 缓存
+_cache/
+_tmp_clips/
+_backup/
+concat_tmp_*.txt
+
+# ffmpeg 二进制（体积太大）
+ffmpeg/
