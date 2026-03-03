@@ -51,11 +51,8 @@ def pick_clips(material_dir, first_videos, audio_dur):
     return clips, chosen_first
 
 def run_cmd(cmd, log_fn, proc_setter):
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            encoding="utf-8", errors="replace")
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     proc_setter(proc)
-    for line in proc.stdout:
-        log_fn(line.rstrip())
     proc.wait()
     proc_setter(None)
     return proc.returncode
@@ -163,13 +160,13 @@ class App(tk.Tk):
         super().__init__()
         self.title("批量视频生成工具")
         self.resizable(True, True)
-        self.minsize(780, 820)
+        self.minsize(680, 420)
         self._cancelled = False
         self._cur_proc  = None
         sv_ttk.set_theme("light")
         self._build()
         self.update_idletasks()
-        w, h = 820, 900
+        w, h = 820, 480
         x = (self.winfo_screenwidth()  - w) // 2
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
@@ -182,13 +179,13 @@ class App(tk.Tk):
         root = ttk.Frame(self, padding=20)
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(2, weight=1)  # 日志区可伸缩
+        # 无可伸缩行，整体紧凑
 
         # ══ 顶部标题栏 ══════════════════════════════════════════
         hdr = ttk.Frame(root)
         hdr.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         ttk.Label(hdr, text="批量视频生成工具",
-                  font=(F, 17, "bold")).pack(side="left")
+                  font=(F, 13, "bold")).pack(side="left")
         ttk.Button(hdr, text="💾 保存配置",
                    command=self._save_config).pack(side="right", padx=(6, 0))
         ttk.Button(hdr, text="📂 加载配置",
@@ -235,7 +232,7 @@ class App(tk.Tk):
         lb_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
         lb_frame.columnconfigure(0, weight=1)
         self.lb_first = tk.Listbox(
-            lb_frame, selectmode="extended", height=3,
+            lb_frame, selectmode="extended", height=2,
             font=("微软雅黑", 9), activestyle="none",
             relief="solid", bd=1, highlightthickness=0,
             selectbackground="#1677FF", selectforeground="white"
@@ -245,13 +242,42 @@ class App(tk.Tk):
         lb_sb.grid(row=0, column=1, sticky="ns")
         self.lb_first.configure(yscrollcommand=lb_sb.set)
 
-        # 操作按钮行
+        # 拖拽把手（拖动改变 Listbox 高度）
+        handle = tk.Frame(first_outer, height=6, cursor="sb_v_double_arrow",
+                          bg="#D0D0D0", relief="flat")
+        handle.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        self._drag_start_y    = 0
+        self._drag_start_h    = 2
+        self._lb_row_px       = 0
+
+        def _drag_press(e):
+            self._drag_start_y = e.y_root
+            self._drag_start_h = self.lb_first.cget("height")
+            # 估算单行像素高度
+            total_px = self.lb_first.winfo_height()
+            cur_h    = self.lb_first.cget("height")
+            self._lb_row_px = max(1, total_px / max(1, cur_h))
+
+        def _drag_move(e):
+            delta_px   = e.y_root - self._drag_start_y
+            delta_rows = int(delta_px / self._lb_row_px + 0.5)
+            new_h = max(1, min(10, self._drag_start_h + delta_rows))
+            self.lb_first.configure(height=new_h)
+
+        handle.bind("<Button-1>",  _drag_press)
+        handle.bind("<B1-Motion>", _drag_move)
+
+        # 操作按钮行 + 计数器
         btn_first_row = ttk.Frame(first_outer)
-        btn_first_row.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        btn_first_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        btn_first_row.columnconfigure(1, weight=1)
         ttk.Button(btn_first_row, text="＋ 添加",
-                   command=self._browse_first).pack(side="left", padx=(0, 6))
+                   command=self._browse_first).grid(row=0, column=0, padx=(0, 6))
         ttk.Button(btn_first_row, text="－ 删除选中",
-                   command=self._remove_selected_first).pack(side="left")
+                   command=self._remove_selected_first).grid(row=0, column=1, sticky="w")
+        self.lbl_first_count = ttk.Label(btn_first_row, text="共 0 个",
+                                         font=(F, 8), foreground="#999999")
+        self.lbl_first_count.grid(row=0, column=2, sticky="e")
 
         ttk.Label(src_card, text="💡 可选；多个片头每条视频等权重随机抽取一个",
                   font=(F, 8), foreground="#999999").grid(
@@ -318,36 +344,16 @@ class App(tk.Tk):
         )
         self.btn_start.grid(row=2, column=0, sticky="ew", pady=(0, 12))
 
-        # ══ 日志区 ══════════════════════════════════════════════
-        log_frame = ttk.LabelFrame(root, text=" 📝 运行日志 ", padding=0)
-        log_frame.grid(row=3, column=0, sticky="nsew", pady=(0, 10))
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        root.rowconfigure(3, weight=1)
-
-        self.log_text = tk.Text(
-            log_frame, bg="#1E1E1E", fg="#D4D4D4",
-            font=("Consolas", 10), state="disabled",
-            relief="flat", bd=0, wrap="word", padx=10, pady=10
-        )
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        sb = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
-        sb.grid(row=0, column=1, sticky="ns")
-        self.log_text.configure(yscrollcommand=sb.set)
-
         # ══ 底部状态栏 ══════════════════════════════════════════
         bar = ttk.Frame(root)
-        bar.grid(row=4, column=0, sticky="ew")
-        bar.columnconfigure(1, weight=1)
-
-        self.lbl_status = ttk.Label(bar, text="就绪", font=(F, 9), foreground="#666666")
-        self.lbl_status.grid(row=0, column=0, sticky="w")
+        bar.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        bar.columnconfigure(0, weight=1)
 
         self.progress = ttk.Progressbar(bar, mode="determinate")
-        self.progress.grid(row=0, column=1, sticky="ew", padx=(16, 16))
+        self.progress.grid(row=0, column=0, sticky="ew")
 
-        ttk.Button(bar, text="🗑 清空日志",
-                   command=self._clear_log).grid(row=0, column=2, sticky="e")
+        self.lbl_status = ttk.Label(bar, text="就绪", font=(F, 9), foreground="#666666")
+        self.lbl_status.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
     # ── 关闭时保存 ───────────────────────────────────────────────
     def _on_close(self):
@@ -427,22 +433,15 @@ class App(tk.Tk):
         self.lb_first.delete(0, "end")
         for p in self._first_paths:
             self.lb_first.insert("end", os.path.basename(p))
-        # Tooltip：悬停显示完整路径（直接用 lb 的 title 模拟）
-        self.lb_first.config(
-            height=max(2, min(5, len(self._first_paths)))
-        )
+        n = len(self._first_paths)
+        self.lbl_first_count.configure(text=f"共 {n} 个")
 
     # ── 日志 / 状态 ──────────────────────────────────────────────
     def _log(self, msg):
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", msg + "\n")
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+        pass
 
     def _clear_log(self):
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
+        pass
 
     def _set_status(self, text):
         self.lbl_status.configure(text=text)
