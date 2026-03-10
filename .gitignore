@@ -20,3 +20,25 @@ concat_tmp_*.txt
 
 # ffmpeg 二进制（体积太大）
 ffmpeg/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 日志
+*.log
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code 本地配置
+.claude/
